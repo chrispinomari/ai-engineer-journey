@@ -1,9 +1,11 @@
+import csv
 import datetime
+import io
 import os
 import sqlite3
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Expense & Insights API")
@@ -120,7 +122,7 @@ def spending_by_category():
         FROM transactions t
         JOIN categories c ON t.category_id = c.id
         GROUP BY c.name
-        ORDER BY total DESC
+        ORDER BY total DESC, c.name ASC
     """).fetchall()
     conn.close()
     return [dict(row) for row in rows]
@@ -152,3 +154,49 @@ def spending_monthly():
     """).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def get_or_create(conn, table, name):
+    # Find the row with this name. If it doesn't exist, create it.
+    # `table` is always written by us in this file, never typed by a user.
+    row = conn.execute(f"SELECT id FROM {table} WHERE name = ?", (name,)).fetchone()
+    if row:
+        return row["id"]
+    cursor = conn.execute(f"INSERT INTO {table} (name) VALUES (?)", (name,))
+    return cursor.lastrowid
+
+
+@app.post("/transactions/upload")
+async def upload_csv(file: UploadFile = File(...)):
+    content = (await file.read()).decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(content))
+
+    conn = get_connection()
+    imported = 0
+    errors = []
+
+    for line_no, row in enumerate(reader, start=2):  # line 1 is the header
+        try:
+            date = datetime.date.fromisoformat(row["date"].strip())
+            amount = float(row["amount"])
+            if amount <= 0:
+                raise ValueError("amount must be greater than 0")
+            merchant = row["merchant"].strip()
+            category = row["category"].strip()
+            if not merchant or not category:
+                raise ValueError("merchant and category cannot be empty")
+
+            merchant_id = get_or_create(conn, "merchants", merchant)
+            category_id = get_or_create(conn, "categories", category)
+            conn.execute(
+                "INSERT INTO transactions (date, amount, merchant_id, category_id) "
+                "VALUES (?, ?, ?, ?)",
+                (date.isoformat(), amount, merchant_id, category_id),
+            )
+            imported += 1
+        except (ValueError, KeyError, AttributeError) as e:
+            errors.append({"line": line_no, "error": str(e)})
+
+    conn.commit()
+    conn.close()
+    return {"imported": imported, "errors": errors}

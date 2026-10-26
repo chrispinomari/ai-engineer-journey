@@ -64,3 +64,41 @@ def test_spending_by_merchant_tie_is_alphabetical(client):
     top = response.json()[0]
     assert top["merchant"] == "Java House"
     assert top["total"] == 1250
+
+
+def test_upload_csv_imports_rows_and_creates_new_merchants(client):
+    csv_text = (
+        "date,amount,merchant,category\n"
+        "2026-10-14,350,Java House,Food\n"
+        "2026-10-15,500,Uber,Transport\n"
+        "2026-10-16,1500,KPLC,Bills\n"
+        "2026-10-17,200,Naivas,Food\n"
+        "2026-10-18,900,Spotify,Entertainment\n"
+    )
+    response = client.post(
+        "/transactions/upload",
+        files={"file": ("t.csv", csv_text, "text/csv")},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"imported": 5, "errors": []}
+
+    # KPLC and Spotify did not exist before, so they must exist now.
+    merchants = [m["name"] for m in client.get("/merchants").json()]
+    assert "KPLC" in merchants
+    assert "Spotify" in merchants
+
+
+def test_upload_csv_reports_bad_rows_but_imports_good_ones(client):
+    csv_text = (
+        "date,amount,merchant,category\n"
+        "2026-10-19,-40,Uber,Transport\n"      # line 2: negative amount
+        "banana,100,Uber,Transport\n"          # line 3: bad date
+        "2026-10-20,100,Uber,Transport\n"      # line 4: good
+    )
+    response = client.post(
+        "/transactions/upload",
+        files={"file": ("t.csv", csv_text, "text/csv")},
+    )
+    body = response.json()
+    assert body["imported"] == 1
+    assert [e["line"] for e in body["errors"]] == [2, 3]
