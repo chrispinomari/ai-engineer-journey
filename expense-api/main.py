@@ -1,4 +1,5 @@
 import datetime
+import os
 import sqlite3
 from typing import Optional
 
@@ -7,9 +8,12 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="Expense & Insights API")
 
+# Which database file to use. Tests can change this to a throwaway file.
+DB_PATH = os.environ.get("EXPENSES_DB", "expenses.db")
+
 
 def get_connection():
-    conn = sqlite3.connect("expenses.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     # SQLite ignores foreign keys unless you switch this on.
     conn.execute("PRAGMA foreign_keys = ON")
@@ -51,8 +55,8 @@ def list_transactions(
     end_date: Optional[datetime.date] = None,
     category: Optional[str] = None,
 ):
-    # "WHERE 1=1" is always true. It's a trick that lets us add
-    # optional "AND ..." filters below without worrying about the first one.
+    # "WHERE 1=1" is always true. It lets us add optional "AND ..."
+    # filters below without worrying about which one comes first.
     sql = """
         SELECT t.id, t.date, t.amount,
                m.name AS merchant, c.name AS category
@@ -122,6 +126,20 @@ def spending_by_category():
     return [dict(row) for row in rows]
 
 
+@app.get("/spending/by-merchant")
+def spending_by_merchant():
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT m.name AS merchant, SUM(t.amount) AS total
+        FROM transactions t
+        JOIN merchants m ON t.merchant_id = m.id
+        GROUP BY m.name
+        ORDER BY total DESC, m.name ASC
+    """).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
 @app.get("/spending/monthly")
 def spending_monthly():
     # substr(date, 1, 7) takes the first 7 characters: "2026-10"
@@ -131,18 +149,6 @@ def spending_monthly():
         FROM transactions
         GROUP BY month
         ORDER BY month
-    """).fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
-@app.get("/spending/by-merchant")
-def spending_by_merchant():
-    conn = get_connection()
-    rows = conn.execute("""
-        SELECT m.name AS merchant, SUM(t.amount) AS total
-        FROM transactions t
-        JOIN merchants m ON t.merchant_id = m.id
-        GROUP BY m.name
-        ORDER BY total DESC
     """).fetchall()
     conn.close()
     return [dict(row) for row in rows]
